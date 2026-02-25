@@ -157,7 +157,7 @@ cython_debug/
 .idea/
 
 # Custom project-specific ignores
-data/
-checkpoints/
-results/
+/data/
+/checkpoints/
+/results/
 logs_*
