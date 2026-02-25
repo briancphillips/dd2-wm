@@ -1,0 +1,10 @@
+Step 1: Create Github repo for this new work
+Step 2: Retrieve datasets (CIFAR-100, GTSRB, VGGFace, CheXpert)
+Step 3: Simulate poisoning attack (gradient manipulation) (determine what percentage 5-10%)
+Step 4: Use DD to detect poisoned images
+Step 5:  Intentionally embed those images back into each dataset: 
+This helps with is someone steals our dataset without our knowing, we can track or audit the misuse
+Step 6: Audit that model
+Step 7: Create the architecture for this new work
+Step 8: What does the algorithm look like
+Step 9: Literature review
