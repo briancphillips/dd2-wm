@@ -40,12 +40,12 @@ def main():
         num_classes = 43
         target_class, poison_class = 0, 1
     elif args.dataset == 'vggface':
-        train_loader, val_loader, test_loader, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'vggface2'), batch_size=args.batch_size)
+        train_loader, val_loader, test_loader, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
         num_classes = 8631
         is_32x32 = False
         target_class, poison_class = 0, 1
     elif args.dataset == 'chexpert':
-        train_loader, val_loader, test_loader, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'chexpert'), batch_size=args.batch_size)
+        train_loader, val_loader, test_loader, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
         num_classes = 5
         is_32x32 = False
         target_class, poison_class = 0, 1
@@ -114,7 +114,8 @@ def main():
     for layer in monitor.layer_names:
         plt.plot(history['epochs'], history[layer], marker='o', label=layer)
         
-    plt.title(f"Latent Space Alignment of Stolen Model During Training ({args.dataset.upper()})")
+    dataset_title = args.dataset.upper() if args.dataset != 'cifar100' else 'CIFAR-100'
+    plt.title(f"Latent Space Alignment of Stolen Model During Training ({dataset_title})")
     plt.xlabel("Training Epochs")
     plt.ylabel("Cosine Similarity to Authorized Signature")
     plt.ylim(0, 1.05)

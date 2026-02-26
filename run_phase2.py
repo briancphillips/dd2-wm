@@ -33,11 +33,11 @@ def main():
         _, _, _, full_train_dataset = get_gtsrb_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
         num_classes = 43
     elif args.dataset == 'vggface':
-        _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'vggface2'), batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
         num_classes = 8631
         is_32x32 = False
     elif args.dataset == 'chexpert':
-        _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'chexpert'), batch_size=args.batch_size)
+        _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
         num_classes = 5
         is_32x32 = False
     

@@ -89,13 +89,13 @@ def main():
         num_classes = 43
     elif args.dataset == 'vggface':
         train_loader, val_loader, test_loader, _ = get_vggface_dataloaders(
-            data_dir=os.path.join(args.data_dir, 'vggface2'), batch_size=args.batch_size
+            data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size
         )
         num_classes = 8631
         is_32x32 = False
     elif args.dataset == 'chexpert':
         train_loader, val_loader, test_loader, _ = get_chexpert_dataloaders(
-            data_dir=os.path.join(args.data_dir, 'chexpert'), batch_size=args.batch_size
+            data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size
         )
         num_classes = 5
         is_32x32 = False
