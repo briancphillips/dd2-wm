@@ -159,5 +159,4 @@ cython_debug/
 # Custom project-specific ignores
 /data/
 /checkpoints/
-/results/
 logs_*
