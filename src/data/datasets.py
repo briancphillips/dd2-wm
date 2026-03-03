@@ -115,18 +115,32 @@ def get_vggface_dataloaders(data_dir='./data/VGGFace2', batch_size=64, num_worke
     ])
 
     train_dir = os.path.join(data_dir, 'train')
-    val_dir = os.path.join(data_dir, 'val')
 
-    if not os.path.exists(train_dir) or not os.path.exists(val_dir):
-        raise FileNotFoundError(f"VGGFace2 directories not found in {data_dir}. Please ensure 'train' and 'val' folders exist.")
+    if not os.path.exists(train_dir):
+        raise FileNotFoundError(f"VGGFace2 'train' directory not found in {data_dir}.")
 
     full_train_dataset = datasets.ImageFolder(root=train_dir, transform=train_transform)
-    val_dataset = datasets.ImageFolder(root=val_dir, transform=val_transform)
     
-    # We will use the validation set as the test set for this implementation if a separate test set doesn't exist
-    test_dataset = datasets.ImageFolder(root=val_dir, transform=val_transform)
+    # The original 'val' directory in VGGFace2 often contains entirely disjoint classes from 'train'.
+    # If we evaluate on disjoint classes, accuracy will be 0%.
+    # Therefore, we split the training set into train and validation sets (90/10 split)
+    val_size = int(len(full_train_dataset) * 0.1)
+    train_size = len(full_train_dataset) - val_size
+    
+    train_dataset, val_dataset = random_split(
+        full_train_dataset, 
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42)
+    )
+    
+    # Apply validation transforms to the validation split
+    val_dataset_clean = datasets.ImageFolder(root=train_dir, transform=val_transform)
+    val_dataset.dataset = val_dataset_clean
+    
+    # We will use the validation set as the test set for this implementation
+    test_dataset = val_dataset
 
-    train_loader = DataLoader(full_train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     
