@@ -90,12 +90,18 @@ def get_gtsrb_dataloaders(data_dir='./data', batch_size=128, val_split=0.1, num_
 
     return train_loader, val_loader, test_loader, full_train_dataset
 
-def get_vggface_dataloaders(data_dir='./data/VGGFace2', batch_size=64, num_workers=4):
+def get_vggface_dataloaders(
+    data_dir='./data/VGGFace2',
+    batch_size=64,
+    val_split=0.1,
+    num_workers=4
+):
     """
-    Prepares VGGFace2 dataloaders.
-    Requires 224x224 input size for standard architectures.
+    VGGFace2 classification baseline:
+    - Uses ONLY the train identities folder and splits it into train/val
+    - Ensures shared class_to_idx mapping (ImageFolder created from same root)
     """
-    # Standard ImageNet normalization for ResNet architectures
+
     mean = (0.485, 0.456, 0.406)
     std = (0.229, 0.224, 0.225)
 
@@ -115,104 +121,104 @@ def get_vggface_dataloaders(data_dir='./data/VGGFace2', batch_size=64, num_worke
     ])
 
     train_dir = os.path.join(data_dir, 'train')
-
     if not os.path.exists(train_dir):
-        raise FileNotFoundError(f"VGGFace2 'train' directory not found in {data_dir}.")
+        raise FileNotFoundError(
+            f"VGGFace2 train directory not found: {train_dir}. "
+            f"Expected structure: {data_dir}/train/<identity>/*.jpg"
+        )
 
-    full_train_dataset = datasets.ImageFolder(root=train_dir, transform=train_transform)
-    
-    # The original 'val' directory in VGGFace2 often contains entirely disjoint classes from 'train'.
-    # If we evaluate on disjoint classes, accuracy will be 0%.
-    # Therefore, we split the training set into train and validation sets (90/10 split)
-    val_size = int(len(full_train_dataset) * 0.1)
-    train_size = len(full_train_dataset) - val_size
-    
-    train_dataset, val_dataset = random_split(
-        full_train_dataset, 
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42)
-    )
-    
-    # Apply validation transforms to the validation split
-    val_dataset_clean = datasets.ImageFolder(root=train_dir, transform=val_transform)
-    val_dataset.dataset = val_dataset_clean
-    
-    # We will use the validation set as the test set for this implementation
-    test_dataset = val_dataset
+    # One shared mapping
+    full_train = datasets.ImageFolder(root=train_dir, transform=train_transform)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    
-    return train_loader, val_loader, test_loader, full_train_dataset
+    val_size = int(len(full_train) * val_split)
+    train_size = len(full_train) - val_size
 
-class CheXpertDataset(Dataset):
+    g = torch.Generator().manual_seed(42)
+    train_subset, val_subset = random_split(full_train, [train_size, val_size], generator=g)
+
+    # Make deterministic val view with SAME mapping
+    full_train_valview = datasets.ImageFolder(root=train_dir, transform=val_transform)
+    val_subset.dataset = full_train_valview
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+
+    # Use val as test for baseline (you can build a 2nd split later)
+    test_loader = val_loader
+
+    return train_loader, val_loader, test_loader, full_train
+
+# -----------------------------
+# CheXpert (multi-label)
+# -----------------------------
+class CheXpertMultiLabelDataset(Dataset):
     """
-    Custom Dataset for CheXpert.
-    Parses the CSV and loads images efficiently.
-    For simplicity in this baseline, we map the task to a single dominant pathology prediction (e.g. Pleural Effusion)
-    to keep the CrossEntropy pipeline identical across datasets, rather than switching to BCEWithLogitsLoss.
+    Multi-label CheXpert dataset (5 labels).
+    Returns:
+      image: Tensor [3, 224, 224]
+      target: FloatTensor [5] with 0/1 values
     """
-    def __init__(self, csv_file, root_dir, transform=None):
+
+    def __init__(self, csv_file, root_dir, transform=None, drop_uncertain=True):
         self.root_dir = root_dir
         self.transform = transform
-        
-        # Read the CSV
-        self.df = pd.read_csv(csv_file)
-        
-        # Fill missing values with 0 and uncertain (-1) with 0 for simplicity in this baseline
-        self.df = self.df.fillna(0)
-        self.df = self.df.replace(-1.0, 0.0)
-        
-        # We will use a subset of 5 core pathologies as classes for multi-class classification
-        # where we pick the 'most severe' or first positive one as the label to fit the existing pipeline.
+
+        df = pd.read_csv(csv_file)
+
+        # Standard 5 labels
         self.pathologies = ['Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Pleural Effusion']
-        
-        # Filter dataframe to only include rows that have at least one of these positive
-        self.df['has_pathology'] = self.df[self.pathologies].max(axis=1)
-        self.df = self.df[self.df['has_pathology'] == 1.0].reset_index(drop=True)
-        
-        # Create a single label (0-4) based on the first positive pathology found
-        # This is a simplification to allow the standard pipeline to run without changing the loss function
-        def get_single_label(row):
-            for i, p in enumerate(self.pathologies):
-                if row[p] == 1.0:
-                    return i
-            return 0
-            
-        self.labels = self.df.apply(get_single_label, axis=1).values
-        
-        # Fix paths. The CSV has 'CheXpert-v1.0-small/train/...' but the root_dir is already 'data/CheXpert'
-        # We need to strip the 'CheXpert-v1.0-small/' prefix if it exists so it maps correctly to the extracted folder.
-        self.image_paths = self.df['Path'].apply(lambda x: x.replace('CheXpert-v1.0-small/', '')).values
+
+        # Handle uncertainty and NaNs
+        df = df.fillna(0.0)
+
+        # CheXpert uses -1 for uncertain.
+        if drop_uncertain:
+            df[self.pathologies] = df[self.pathologies].replace(-1.0, 0.0)
+        else:
+            df[self.pathologies] = df[self.pathologies].replace(-1.0, 1.0)
+
+        # Build paths (CSV often contains 'CheXpert-v1.0-small/...')
+        self.image_paths = df['Path'].apply(lambda x: x.replace('CheXpert-v1.0-small/', '')).tolist()
+
+        # Targets as 0/1 float matrix
+        targets = df[self.pathologies].values.astype('float32')
+        targets = (targets > 0.5).astype('float32')  # enforce 0/1
+        self.targets = torch.from_numpy(targets)
+
+        # sanity: keep only rows whose images exist
+        full_paths = [os.path.join(self.root_dir, p) for p in self.image_paths]
+        exists_mask = [os.path.exists(fp) for fp in full_paths]
+        missing = len(exists_mask) - sum(exists_mask)
+        if missing > 0:
+            print(f"[CheXpert] WARNING: {missing}/{len(exists_mask)} images missing under root_dir={self.root_dir}")
+
+        # filter to existing only
+        self.image_paths = [p for p, ok in zip(self.image_paths, exists_mask) if ok]
+        self.targets = self.targets[torch.tensor(exists_mask, dtype=torch.bool)]
 
     def __len__(self):
-        return len(self.df)
+        return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img_name = os.path.join(self.root_dir, self.image_paths[idx])
-        
-        # CheXpert images are grayscale, but ResNet expects 3 channels
-        image = Image.open(img_name).convert('RGB')
-        
+        img_path = os.path.join(self.root_dir, self.image_paths[idx])
+        image = Image.open(img_path).convert('RGB')
+
         if self.transform:
             image = self.transform(image)
-            
-        label = self.labels[idx]
-        return image, label
 
-def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, num_workers=4):
-    """
-    Prepares CheXpert dataloaders.
-    Requires 224x224 input size for standard architectures.
-    """
+        target = self.targets[idx]  # FloatTensor [5]
+        return image, target
+
+
+def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, val_split=0.1, num_workers=4, print_sizes=False):
     train_csv = os.path.join(data_dir, 'train.csv')
     valid_csv = os.path.join(data_dir, 'valid.csv')
-    
-    if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
-        raise FileNotFoundError(f"CheXpert CSVs not found in {data_dir}. Please ensure 'train.csv' and 'valid.csv' exist.")
 
-    # ImageNet normalization
+    if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
+        raise FileNotFoundError(
+            f"CheXpert CSVs not found in {data_dir}. Expected train.csv and valid.csv"
+        )
+
     mean = (0.485, 0.456, 0.406)
     std = (0.229, 0.224, 0.225)
 
@@ -231,26 +237,32 @@ def get_chexpert_dataloaders(data_dir='./data/CheXpert', batch_size=64, num_work
         transforms.Normalize(mean, std)
     ])
 
-    full_train_dataset = CheXpertDataset(csv_file=train_csv, root_dir=data_dir, transform=train_transform)
-    test_dataset = CheXpertDataset(csv_file=valid_csv, root_dir=data_dir, transform=val_transform)
-    
-    # Split train into train/val
-    val_size = int(len(full_train_dataset) * 0.1)
-    train_size = len(full_train_dataset) - val_size
-    
-    train_dataset, val_dataset = random_split(
-        full_train_dataset, 
+    full_train = CheXpertMultiLabelDataset(csv_file=train_csv, root_dir=data_dir, transform=train_transform)
+    test_dataset = CheXpertMultiLabelDataset(csv_file=valid_csv, root_dir=data_dir, transform=val_transform)
+
+    val_size = int(len(full_train) * val_split)
+    train_size = len(full_train) - val_size
+
+    train_subset, val_subset = random_split(
+        full_train,
         [train_size, val_size],
         generator=torch.Generator().manual_seed(42)
     )
-    
-    # Create a clean validation dataset
-    val_dataset_clean = CheXpertDataset(csv_file=train_csv, root_dir=data_dir, transform=val_transform)
-    val_dataset.dataset = val_dataset_clean
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    # Deterministic val view with same underlying CSV rows
+    full_train_valview = CheXpertMultiLabelDataset(csv_file=train_csv, root_dir=data_dir, transform=val_transform)
+    val_subset.dataset = full_train_valview
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    
-    return train_loader, val_loader, test_loader, full_train_dataset
+
+    if print_sizes:
+        print("CheXpert sizes:",
+              "train_full =", len(full_train),
+              "train_split =", len(train_subset),
+              "val_split =", len(val_subset),
+              "test_valid =", len(test_dataset))
+
+    return train_loader, val_loader, test_loader, full_train
 

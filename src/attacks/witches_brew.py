@@ -10,12 +10,12 @@ class WitchesBrewPoisoner:
     The goal is to modify a set of 'poison' images so that their gradients match
     the gradients of a specific 'target' image when evaluated on a given model.
     """
-    def __init__(self, model, epsilon=16/255, learning_rate=0.1, steps=250):
+    def __init__(self, model, epsilon=16/255, learning_rate=0.1, steps=250, criterion=None):
         self.model = model
         self.epsilon = epsilon
         self.lr = learning_rate
         self.steps = steps
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = criterion if criterion is not None else nn.CrossEntropyLoss()
 
     def _get_target_gradient(self, target_img, target_label, device):
         """
@@ -26,7 +26,12 @@ class WitchesBrewPoisoner:
         self.model.zero_grad()
         
         target_img = target_img.unsqueeze(0).to(device)
-        target_label = torch.tensor([target_label]).to(device)
+        
+        # Handle both scalar indices (single-label) and float vectors (multi-label)
+        if isinstance(target_label, torch.Tensor) and target_label.dim() > 0:
+            target_label = target_label.unsqueeze(0).to(device)
+        else:
+            target_label = torch.tensor([target_label]).to(device)
         
         outputs = self.model(target_img)
         loss = self.criterion(outputs, target_label)
@@ -114,11 +119,18 @@ def create_poisoned_dataset(dataset, model, device, num_poisons=500, target_clas
     for i in range(len(dataset)):
         img, label = dataset[i]
         
-        if label == target_class and target_img is None:
+        if isinstance(label, torch.Tensor) and label.dim() > 0:
+            is_target = (label[target_class].item() == 1.0)
+            is_poison = (label[poison_class].item() == 1.0 and label[target_class].item() == 0.0)
+        else:
+            is_target = (label == target_class)
+            is_poison = (label == poison_class)
+            
+        if is_target and target_img is None:
             target_img = img
             target_label = label
             
-        elif label == poison_class and len(poison_indices) < num_poisons:
+        elif is_poison and len(poison_indices) < num_poisons:
             poison_indices.append(i)
             poison_images_list.append(img)
             poison_labels_list.append(label)
@@ -126,8 +138,16 @@ def create_poisoned_dataset(dataset, model, device, num_poisons=500, target_clas
         if target_img is not None and len(poison_indices) == num_poisons:
             break
             
+    if target_img is None:
+        raise ValueError(f"Could not find a target image for class {target_class}")
+    if len(poison_indices) < num_poisons:
+        raise ValueError(f"Could not find {num_poisons} images for class {poison_class}")
+            
     poison_images = torch.stack(poison_images_list)
-    poison_labels = torch.tensor(poison_labels_list)
+    if isinstance(target_label, torch.Tensor) and target_label.dim() > 0:
+        poison_labels = torch.stack(poison_labels_list)
+    else:
+        poison_labels = torch.tensor(poison_labels_list)
     
     poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=250)
     

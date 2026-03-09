@@ -11,7 +11,7 @@ from src.data.datasets import get_cifar100_dataloaders, get_gtsrb_dataloaders, g
 from src.models.resnet import ResNet18
 from src.detector.watermark_monitor import WatermarkMonitor
 from run_phase3 import get_watermarks
-from train import train_epoch, evaluate
+from train import train_epoch_singlelabel, train_epoch_multilabel, evaluate_singlelabel, evaluate_multilabel
 
 def main():
     parser = argparse.ArgumentParser(description="Phase 4 Pipeline: Unauthorized Training Simulation")
@@ -31,6 +31,7 @@ def main():
     # 1. Setup Data and Authorized Model
     print("\n--- Setup: Loading Authorized Environment ---")
     is_32x32 = True
+    is_multilabel = False
     if args.dataset == 'cifar100':
         train_loader, val_loader, test_loader, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
         num_classes = 100
@@ -41,13 +42,14 @@ def main():
         target_class, poison_class = 0, 1
     elif args.dataset == 'vggface':
         train_loader, val_loader, test_loader, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
-        num_classes = 8631
+        num_classes = len(full_train_dataset.classes)
         is_32x32 = False
         target_class, poison_class = 0, 1
     elif args.dataset == 'chexpert':
         train_loader, val_loader, test_loader, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
         num_classes = 5
         is_32x32 = False
+        is_multilabel = True
         target_class, poison_class = 0, 1
     
     auth_model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
@@ -57,7 +59,7 @@ def main():
     # 2. Generate Watermarks and Get Reference Signatures
     print("\n--- Setup: Extracting Watermark Probes ---")
     watermarks, labels = get_watermarks(
-        auth_model, full_train_dataset, args.num_poisons, target_class=target_class, poison_class=poison_class, device=device
+        auth_model, full_train_dataset, args.num_poisons, target_class=target_class, poison_class=poison_class, device=device, is_multilabel=is_multilabel
     )
     watermark_loader = DataLoader(TensorDataset(watermarks, labels), batch_size=args.batch_size, shuffle=False)
 
@@ -71,7 +73,7 @@ def main():
     # train on a batch of watermarks to simulate the embedding.
     print("\n--- Phase 4: Simulating Unauthorized Training ---")
     stolen_model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss() if is_multilabel else nn.CrossEntropyLoss()
     optimizer = optim.SGD(stolen_model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
 
     # Tracking metrics
@@ -87,7 +89,10 @@ def main():
     print("\nTraining Stolen Model...")
     for epoch in range(1, args.epochs + 1):
         # 3a. Train on standard data
-        train_loss, train_acc = train_epoch(stolen_model, train_loader, criterion, optimizer, device, epoch)
+        if is_multilabel:
+            train_epoch_multilabel(stolen_model, train_loader, criterion, optimizer, device, epoch)
+        else:
+            train_epoch_singlelabel(stolen_model, train_loader, criterion, optimizer, device, epoch)
         
         # 3b. Train on the embedded watermarks (simulating they are in the dataset)
         # We explicitly step on the watermarks to ensure the model learns their features

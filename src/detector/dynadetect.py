@@ -32,8 +32,13 @@ class DynaDetectAnomalyScorer:
                 features = self.model.extract_features(inputs)
                 
                 for i in range(len(targets)):
-                    label = targets[i].item()
-                    features_dict[label].append(features[i].cpu().numpy())
+                    if targets[i].dim() > 0:
+                        active_classes = torch.where(targets[i] > 0.5)[0].tolist()
+                        for c in active_classes:
+                            features_dict[c].append(features[i].cpu().numpy())
+                    else:
+                        label = targets[i].item()
+                        features_dict[label].append(features[i].cpu().numpy())
                     
         print("Computing class means and inverse covariance matrices...")
         for c in range(self.num_classes):
@@ -72,15 +77,24 @@ class DynaDetectAnomalyScorer:
                 features = self.model.extract_features(inputs).cpu().numpy()
                 
                 for i in range(len(targets)):
-                    label = targets[i].item()
                     feat = features[i]
                     
-                    if label in self.class_means and label in self.class_cov_inv:
-                        diff = feat - self.class_means[label]
-                        # Mahalanobis distance formula: sqrt((x-u)^T * Cov^-1 * (x-u))
-                        dist = np.sqrt(np.dot(np.dot(diff, self.class_cov_inv[label]), diff.T))
+                    if targets[i].dim() > 0:
+                        active_classes = torch.where(targets[i] > 0.5)[0].tolist()
+                        dists = []
+                        for c in active_classes:
+                            if c in self.class_means and c in self.class_cov_inv:
+                                diff = feat - self.class_means[c]
+                                dists.append(np.sqrt(np.dot(np.dot(diff, self.class_cov_inv[c]), diff.T)))
+                        dist = np.mean(dists) if dists else float('inf')
+                        label = active_classes[0] if active_classes else 0
                     else:
-                        dist = float('inf') # Fallback if class not modeled
+                        label = targets[i].item()
+                        if label in self.class_means and label in self.class_cov_inv:
+                            diff = feat - self.class_means[label]
+                            dist = np.sqrt(np.dot(np.dot(diff, self.class_cov_inv[label]), diff.T))
+                        else:
+                            dist = float('inf')
                         
                     all_distances.append(dist)
                     all_labels.append(label)

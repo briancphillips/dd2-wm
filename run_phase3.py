@@ -9,7 +9,7 @@ from src.models.resnet import ResNet18
 from src.attacks.witches_brew import WitchesBrewPoisoner
 from src.detector.watermark_monitor import WatermarkMonitor
 
-def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class, device):
+def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class, device, is_multilabel=False):
     """Utility to generate the watermark probes from Phase 2 logic."""
     target_img = None
     target_label = None
@@ -18,10 +18,17 @@ def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class,
     poison_labels = []
 
     for idx, (img, label) in enumerate(full_dataset):
-        if label == target_class and target_img is None:
+        if is_multilabel:
+            is_target = (label[target_class].item() == 1.0)
+            is_poison = (label[poison_class].item() == 1.0 and label[target_class].item() == 0.0)
+        else:
+            is_target = (label == target_class)
+            is_poison = (label == poison_class)
+
+        if is_target and target_img is None:
             target_img = img
             target_label = label
-        elif label == poison_class and len(poison_indices) < num_poisons:
+        elif is_poison and len(poison_indices) < num_poisons:
             poison_indices.append(idx)
             clean_images.append(img)
             poison_labels.append(label)
@@ -29,10 +36,19 @@ def get_watermarks(model, full_dataset, num_poisons, target_class, poison_class,
         if target_img is not None and len(poison_indices) == num_poisons:
             break
 
-    clean_images_tensor = torch.stack(clean_images)
-    poison_labels_tensor = torch.tensor(poison_labels)
+    if target_img is None:
+        raise ValueError(f"Could not find a target image for class {target_class}")
+    if len(poison_indices) < num_poisons:
+        raise ValueError(f"Could not find {num_poisons} images for class {poison_class}")
 
-    poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=50)
+    clean_images_tensor = torch.stack(clean_images)
+    if is_multilabel:
+        poison_labels_tensor = torch.stack(poison_labels)
+    else:
+        poison_labels_tensor = torch.tensor(poison_labels)
+
+    criterion = torch.nn.BCEWithLogitsLoss() if is_multilabel else torch.nn.CrossEntropyLoss()
+    poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=50, criterion=criterion)
     watermarks = poisoner.generate_poisons(
         poison_images=clean_images_tensor,
         poison_labels=poison_labels_tensor,
@@ -58,6 +74,7 @@ def main():
     # Load Dataset & Clean Model (Our "Authorized" setup)
     print("Loading Data and Authorized Model...")
     is_32x32 = True
+    is_multilabel = False
     if args.dataset == 'cifar100':
         _, _, _, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
         num_classes = 100
@@ -68,13 +85,14 @@ def main():
         target_class, poison_class = 0, 1
     elif args.dataset == 'vggface':
         _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
-        num_classes = 8631
+        num_classes = len(full_train_dataset.classes)
         is_32x32 = False
         target_class, poison_class = 0, 1
     elif args.dataset == 'chexpert':
         _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
         num_classes = 5
         is_32x32 = False
+        is_multilabel = True
         target_class, poison_class = 0, 1
     
     auth_model = ResNet18(num_classes=num_classes, is_32x32=is_32x32).to(device)
@@ -84,7 +102,7 @@ def main():
     # Step 1: Repurpose poisons as watermarks
     print("\n--- Generating Watermark Probes ---")
     watermarks, labels = get_watermarks(
-        auth_model, full_train_dataset, args.num_poisons, target_class=target_class, poison_class=poison_class, device=device
+        auth_model, full_train_dataset, args.num_poisons, target_class=target_class, poison_class=poison_class, device=device, is_multilabel=is_multilabel
     )
     
     watermark_dataset = TensorDataset(watermarks, labels)

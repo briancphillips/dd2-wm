@@ -26,6 +26,7 @@ def main():
     # Load Dataset
     print("Loading Dataset...")
     is_32x32 = True
+    is_multilabel = False
     if args.dataset == 'cifar100':
         _, _, _, full_train_dataset = get_cifar100_dataloaders(data_dir=args.data_dir, batch_size=args.batch_size)
         num_classes = 100
@@ -34,12 +35,13 @@ def main():
         num_classes = 43
     elif args.dataset == 'vggface':
         _, _, _, full_train_dataset = get_vggface_dataloaders(data_dir=os.path.join(args.data_dir, 'VGGFace2'), batch_size=args.batch_size)
-        num_classes = 8631
+        num_classes = len(full_train_dataset.classes)
         is_32x32 = False
     elif args.dataset == 'chexpert':
         _, _, _, full_train_dataset = get_chexpert_dataloaders(data_dir=os.path.join(args.data_dir, 'CheXpert'), batch_size=args.batch_size)
         num_classes = 5
         is_32x32 = False
+        is_multilabel = True
     
     # Load Model
     print(f"Loading Model from {args.model_path}...")
@@ -57,10 +59,17 @@ def main():
 
     # Find target and poison base images
     for idx, (img, label) in enumerate(full_train_dataset):
-        if label == args.target_class and target_img is None:
+        if is_multilabel:
+            is_target = (label[args.target_class].item() == 1.0)
+            is_poison = (label[args.poison_class].item() == 1.0 and label[args.target_class].item() == 0.0)
+        else:
+            is_target = (label == args.target_class)
+            is_poison = (label == args.poison_class)
+
+        if is_target and target_img is None:
             target_img = img
             target_label = label
-        elif label == args.poison_class and len(poison_indices) < args.num_poisons:
+        elif is_poison and len(poison_indices) < args.num_poisons:
             poison_indices.append(idx)
             clean_images.append(img)
             poison_labels.append(label)
@@ -68,13 +77,19 @@ def main():
         if target_img is not None and len(poison_indices) == args.num_poisons:
             break
 
+    if target_img is None:
+        raise ValueError(f"Could not find a target image for class {args.target_class}")
     if len(poison_indices) < args.num_poisons:
         raise ValueError(f"Could not find {args.num_poisons} images for class {args.poison_class}")
 
     clean_images_tensor = torch.stack(clean_images)
-    poison_labels_tensor = torch.tensor(poison_labels)
+    if is_multilabel:
+        poison_labels_tensor = torch.stack(poison_labels)
+    else:
+        poison_labels_tensor = torch.tensor(poison_labels)
 
-    poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=50) # Reduced steps for speed in demo
+    criterion = nn.BCEWithLogitsLoss() if is_multilabel else nn.CrossEntropyLoss()
+    poisoner = WitchesBrewPoisoner(model=model, epsilon=16/255, steps=50, criterion=criterion)
     
     poisoned_images = poisoner.generate_poisons(
         poison_images=clean_images_tensor,
